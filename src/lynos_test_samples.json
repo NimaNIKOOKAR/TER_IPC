@@ -1,0 +1,42 @@
+[
+    {
+        "ct": "zip://Benchmark/Pat1/pat1_data.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "lymphnodes": "zip://Benchmark/Pat1/pat1_labels_LymphNodes.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "azygos": "zip://Benchmark/Pat1/pat1_labels_Azygos.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "brachiocephalicveins": "zip://Benchmark/Pat1/pat1_labels_BrachiocephalicVeins.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "esophagus": "zip://Benchmark/Pat1/pat1_labels_Esophagus.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "subclaviancarotidarteries": "zip://Benchmark/Pat1/pat1_labels_SubCarArt.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1"
+    },
+    {
+        "ct": "zip://Benchmark/Pat10/pat10_data.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "lymphnodes": "zip://Benchmark/Pat10/pat10_labels_LymphNodes.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "azygos": "zip://Benchmark/Pat10/pat10_labels_Azygos.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "brachiocephalicveins": "zip://Benchmark/Pat10/pat10_labels_BrachiocephalicVeins.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "esophagus": "zip://Benchmark/Pat10/pat10_labels_Esophagus.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "subclaviancarotidarteries": "zip://Benchmark/Pat10/pat10_labels_SubCarArt.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1"
+    },
+    {
+        "ct": "zip://Benchmark/Pat11/pat11_data.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "lymphnodes": "zip://Benchmark/Pat11/pat11_labels_LymphNodes.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "azygos": "zip://Benchmark/Pat11/pat11_labels_Azygos.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "brachiocephalicveins": "zip://Benchmark/Pat11/pat11_labels_BrachiocephalicVeins.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "esophagus": "zip://Benchmark/Pat11/pat11_labels_Esophagus.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "subclaviancarotidarteries": "zip://Benchmark/Pat11/pat11_labels_SubCarArt.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1"
+    },
+    {
+        "ct": "zip://Benchmark/Pat12/pat12_data.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "lymphnodes": "zip://Benchmark/Pat12/pat12_labels_LymphNodes.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "azygos": "zip://Benchmark/Pat12/pat12_labels_Azygos.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "brachiocephalicveins": "zip://Benchmark/Pat12/pat12_labels_BrachiocephalicVeins.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "esophagus": "zip://Benchmark/Pat12/pat12_labels_Esophagus.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "subclaviancarotidarteries": "zip://Benchmark/Pat12/pat12_labels_SubCarArt.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1"
+    },
+    {
+        "ct": "zip://Benchmark/Pat13/pat13_data.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "lymphnodes": "zip://Benchmark/Pat13/pat13_labels_LymphNodes.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "azygos": "zip://Benchmark/Pat13/pat13_labels_Azygos.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "brachiocephalicveins": "zip://Benchmark/Pat13/pat13_labels_BrachiocephalicVeins.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "esophagus": "zip://Benchmark/Pat13/pat13_labels_Esophagus.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1",
+        "subclaviancarotidarteries": "zip://Benchmark/Pat13/pat13_labels_SubCarArt.nii.gz::https://zenodo.org/records/10102261/files/LyNoS.zip?download=1"
+    }
+]
