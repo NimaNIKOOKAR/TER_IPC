@@ -2,6 +2,9 @@
 # coding: utf-8
 
 import os
+# Set the default timeout for fsspec via an environment variable.
+os.environ["FSSPEC_DEFAULT_TIMEOUT"] = "3600"
+
 import re
 import logging
 import tempfile
@@ -41,6 +44,8 @@ from monai.inferers import sliding_window_inference
 import torch._dynamo
 torch._dynamo.config.disable = True
 
+# Import datasets and DownloadConfig from Hugging Face
+from datasets import load_dataset, DownloadConfig
 
 ###############################################################################
 # Logging Setup: Log to both console and file.
@@ -68,7 +73,6 @@ def setup_logging(log_file: str = "training_log.txt") -> logging.Logger:
 
 logger = setup_logging()
 
-
 ###############################################################################
 # Custom Transform to Remove Unwanted Keys
 ###############################################################################
@@ -85,7 +89,6 @@ class RemoveKeysd(MapTransform):
         for key in self.keys:
             d.pop(key, None)
         return d
-
 
 ###############################################################################
 # Utility Functions
@@ -131,81 +134,61 @@ def load_nii_from_zip(zip_url: str, file_path: str) -> nib.Nifti1Image:
     
     return img_in_memory
 
-
 def combine_labels(data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     """
     Combine separate label masks into one multi-class label.
     
-    Order of assignment (with later ones overriding previous in case of overlap):
-      - Initialize background (0)
-      - Lymph nodes: assign 1 where label_lymph > 0.
-      - Subclavian carotid arteries: assign 2 where label_subcar > 0.
-      - Azygos: assign 3 where label_azygos > 0.
-      - Esophagus: assign 4 where label_esophagus > 0.
+    Order of assignment:
+      - Background: 0
+      - Lymph nodes: 1 (where label_lymph > 0)
+      - Subcarotid: 2 (where label_subcar > 0)
+      - Azygos: 3 (where label_azygos > 0)
+      - Esophagus: 4 (where label_esophagus > 0)
     """
-    # Start with background = 0
     label = np.zeros_like(data["label_lymph"], dtype=np.int64)
-    
-    # Assign lymph nodes (class 1)
     label[data["label_lymph"] > 0] = 1
-    # Override with subclavian carotid arteries (class 2)
     label[data["label_subcar"] > 0] = 2
-    # Override with azygos (class 3)
     label[data["label_azygos"] > 0] = 3
-    # Override with esophagus (class 4)
     label[data["label_esophagus"] > 0] = 4
-    
     data["label"] = label
     return data
 
-
-def prepare_data(extract_path: str) -> Tuple[List[str], List[str], List[str], List[str], List[str]]:
+###############################################################################
+# Data Preparation using the Hugging Face datasets library
+###############################################################################
+def prepare_data_from_datasets() -> Tuple[List[str], List[str], List[str], List[str], List[str]]:
     """
-    Prepare dataset by extracting image and label paths.
+    Load the LyNoS dataset using the Hugging Face datasets library.
     
-    Returns five lists corresponding to:
-      - CT images
-      - Lymph nodes masks
-      - Subclavian carotid arteries masks
-      - Azygos masks
-      - Esophagus masks
+    Assumes the dataset at "andreped/LyNoS" has the keys:
+      - "data": CT image file path,
+      - "labels_LymphNodes": lymph nodes mask path,
+      - "labels_SubCarArt": subcarotid arteries mask path,
+      - "labels_Azygos": azygos mask path,
+      - "labels_Esophagus": esophagus mask path.
+    
+    Adjust the keys if needed.
     """
-    benchmark_path = os.path.join(extract_path, "Benchmark")
-    zip_path = os.path.join(extract_path, "LyNoS.zip")
+    download_config = DownloadConfig(max_retries=10)
+    ds = load_dataset("andreped/LyNoS", split="train", download_config=download_config)
+    logger.info(f"Loaded dataset with {ds.num_rows} CT scans from Hugging Face datasets.")
     
-    if not os.path.exists(benchmark_path):
-        logger.info("Extracting dataset...")
-        with ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(extract_path)
-        logger.info("Dataset unzipped successfully!")
-    if not os.path.exists(benchmark_path):
-        raise FileNotFoundError(f"Benchmark folder not found at {benchmark_path}")
-    logger.info(f"Dataset extracted to: {benchmark_path}")
-
-    image_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_data.nii.gz")))
-    lymph_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_LymphNodes.nii.gz")))
-    subcar_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_SubCarArt.nii.gz")))
-    azygos_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_Azygos.nii.gz")))
-    esophagus_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_Esophagus.nii.gz")))
+    image_paths           = ds["data"]
+    lymph_label_paths     = ds["labels_LymphNodes"]
+    subcar_label_paths    = ds["labels_SubCarArt"]
+    azygos_label_paths    = ds["labels_Azygos"]
+    esophagus_label_paths = ds["labels_Esophagus"]
     
-    if not (image_paths and lymph_label_paths and subcar_label_paths and azygos_label_paths and esophagus_label_paths):
-        raise ValueError("One or more CT images or label files not found. Check the dataset structure.")
-    logger.info(f"Found {len(image_paths)} CT images, {len(lymph_label_paths)} lymph masks, "
-                f"{len(subcar_label_paths)} sub-car masks, {len(azygos_label_paths)} azygos masks, and "
-                f"{len(esophagus_label_paths)} esophagus masks.")
-    
+    logger.info("Extracted file paths for CT images and label masks.")
     return image_paths, lymph_label_paths, subcar_label_paths, azygos_label_paths, esophagus_label_paths
 
-
-# Top-level identity function (replaces lambda) so it is picklable.
+# Top-level identity function (needed for pickling)
 def identity(x):
     return x
-
 
 def create_transforms(train: bool = True) -> Compose:
     """
     Create a MONAI transform pipeline for training or validation.
-    Now loads all four masks and combines them.
     """
     transforms = [
         LoadImaged(keys=["image", "label_lymph", "label_subcar", "label_azygos", "label_esophagus"]),
@@ -234,7 +217,6 @@ def create_transforms(train: bool = True) -> Compose:
     ])
     return Compose(transforms)
 
-
 def create_dataloaders(train_data: List[Dict[str, str]],
                        val_data: List[Dict[str, str]],
                        batch_size_train: int = 4,
@@ -242,22 +224,19 @@ def create_dataloaders(train_data: List[Dict[str, str]],
                        num_workers: int = 0) -> Tuple[DataLoader, DataLoader]:
     """
     Create training and validation DataLoaders.
-    Using num_workers=0 to reduce memory consumption on Windows.
     """
     train_ds = Dataset(data=train_data, transform=create_transforms(train=True))
     val_ds   = Dataset(data=val_data, transform=create_transforms(train=False))
     
     train_loader = DataLoader(train_ds, batch_size=batch_size_train, shuffle=True,
                               num_workers=num_workers, collate_fn=pad_list_data_collate, pin_memory=True)
-    val_loader   = DataLoader(val_ds, batch_size=batch_size_val, shuffle=False,
-                              num_workers=num_workers, collate_fn=pad_list_data_collate, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size_val, shuffle=False,
+                            num_workers=num_workers, collate_fn=pad_list_data_collate, pin_memory=True)
     return train_loader, val_loader
-
 
 def build_model(device: torch.device) -> torch.nn.Module:
     """
-    Build and return a 3D UNet model.
-    Updated to output 5 channels (background + 4 classes).
+    Build and return a 3D UNet model with 5 output channels.
     """
     model = UNet(
         spatial_dims=3,
@@ -269,7 +248,6 @@ def build_model(device: torch.device) -> torch.nn.Module:
     ).to(device)
     logger.info("Model moved to device successfully!")
     return model
-
 
 ###############################################################################
 # Training and Validation Functions
@@ -285,8 +263,7 @@ def train_epoch(model: torch.nn.Module,
     """
     model.train()
     epoch_loss = 0.0
-    # Use AMP (mixed precision) if enabled:
-    scaler = torch.amp.GradScaler("cuda") if use_amp else None
+    scaler = torch.amp.GradScaler() if use_amp else None
     
     for batch in loader:
         inputs = batch["image"].to(device)
@@ -294,7 +271,7 @@ def train_epoch(model: torch.nn.Module,
         optimizer.zero_grad()
         
         if use_amp:
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast():
                 outputs = model(inputs)
                 loss = loss_function(outputs, labels)
             scaler.scale(loss).backward()
@@ -309,30 +286,24 @@ def train_epoch(model: torch.nn.Module,
         epoch_loss += loss.item()
     return epoch_loss / len(loader)
 
-
 def validate_epoch(model: torch.nn.Module, 
                    loader: DataLoader,
                    dice_metric: DiceMetric,
                    device: torch.device) -> float:
     """
-    Run one epoch of validation.
-    Moves predictions and labels to CPU before computing the Dice metric to reduce GPU memory usage.
+    Run one epoch of validation and compute the Dice metric.
     """
     model.eval()
     with torch.no_grad():
         for batch in loader:
             val_inputs = batch["image"].to(device)
             val_labels = batch["label"].to(device)
-            # Use a small sliding window batch size to reduce memory
             val_outputs = sliding_window_inference(val_inputs, (96, 96, 96), 1, model)
-            # Move predictions and ground truth to CPU for metric computation
             dice_metric(y_pred=val_outputs.cpu(), y=val_labels.cpu())
-            torch.cuda.empty_cache()  # clear unused memory
+            torch.cuda.empty_cache()
     dice_score = dice_metric.aggregate().item()
     dice_metric.reset()
     return dice_score
-
-
 
 ###############################################################################
 # Main Training Function
@@ -353,12 +324,10 @@ def training_main():
             device = torch.device("cpu")
             logger.info("Falling back to CPU.")
     
-    # Data Preparation
-    extract_path = r"C:\Users\niman\OneDrive\Desktop\TER_IPC\src\cached_lynos"
-    (image_paths, lymph_label_paths, subcar_label_paths, 
-     azygos_label_paths, esophagus_label_paths) = prepare_data(extract_path)
+    # Data Preparation using Hugging Face datasets.
+    image_paths, lymph_label_paths, subcar_label_paths, azygos_label_paths, esophagus_label_paths = prepare_data_from_datasets()
     
-    # Split the data into training and validation sets (80/20 split)
+    # Split the data into training and validation sets (80/20 split).
     (train_imgs, val_imgs, 
      train_lymph, val_lymph, 
      train_subcar, val_subcar, 
@@ -368,7 +337,7 @@ def training_main():
          test_size=0.2, random_state=42
     )
     
-    # Build training/validation dictionaries including all masks.
+    # Build training/validation dictionaries.
     train_data = [
         {
             "image": img,
@@ -394,7 +363,7 @@ def training_main():
     
     train_loader, val_loader = create_dataloaders(train_data, val_data, num_workers=0)
     
-    # Build Model, Loss, Optimizer, and Metrics
+    # Build Model, Loss, Optimizer, and Metrics.
     model = build_model(device)
     loss_function = DiceLoss(to_onehot_y=True, softmax=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -402,7 +371,7 @@ def training_main():
         group["capturable"] = True
     dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
     
-    # Debug: One forward-backward pass on one batch
+    # Debug: One forward-backward pass on one batch.
     logger.info("DEBUG: Testing one forward-backward pass on one batch")
     model.train()
     batch_data = next(iter(train_loader))
@@ -417,11 +386,11 @@ def training_main():
     optimizer.step()
     logger.info("DEBUG: Forward-backward pass successful.\n")
     
-    # Training Loop
+    # Training Loop.
     num_epochs = 50
     best_metric = -1.0
     best_metric_epoch = -1
-    use_amp = device.type == "cuda"  # Enable mixed precision if on GPU
+    use_amp = device.type == "cuda"
     
     for epoch in range(num_epochs):
         start_time = time()
@@ -443,7 +412,7 @@ def training_main():
     
     logger.info(f"Best validation Dice Score: {best_metric:.4f} at epoch {best_metric_epoch}")
     
-    # Visualization of Results using best model
+    # Visualization of Results using the best model.
     model.load_state_dict(torch.load("best_metric_model.pth", map_location=device))
     model.eval()
     with torch.no_grad():

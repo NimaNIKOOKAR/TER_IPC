@@ -101,3 +101,23 @@
 2025-02-06 19:56:04,803 [INFO] Epoch 18 completed in 409.03 seconds.
 
 2025-02-06 19:56:04,803 [INFO] Epoch 19/50
+2025-02-10 10:01:41,600 [INFO] Using device: cpu
+2025-02-10 10:01:41,601 [INFO] Extracting dataset...
+2025-02-10 10:02:10,998 [INFO] Using device: cpu
+2025-02-10 10:02:10,998 [INFO] Extracting dataset...
+2025-02-10 10:15:45,031 [INFO] Using device: cuda
+2025-02-10 10:15:45,356 [INFO] GPU test passed!
+2025-02-10 10:29:11,030 [INFO] Using device: cuda
+2025-02-10 10:29:11,198 [INFO] GPU test passed!
+2025-02-10 10:30:49,662 [INFO] Using device: cuda
+2025-02-10 10:30:49,832 [INFO] GPU test passed!
+2025-02-10 10:38:35,302 [INFO] Using device: cuda
+2025-02-10 10:38:35,476 [INFO] GPU test passed!
+2025-02-10 10:40:33,048 [INFO] Using device: cuda
+2025-02-10 10:40:33,209 [INFO] GPU test passed!
+2025-02-10 10:42:40,660 [INFO] Using device: cuda
+2025-02-10 10:42:40,834 [INFO] GPU test passed!
+2025-02-10 10:52:20,624 [INFO] Using device: cuda
+2025-02-10 10:52:20,784 [INFO] GPU test passed!
+2025-02-10 10:59:22,815 [INFO] Using device: cuda
+2025-02-10 10:59:22,975 [INFO] GPU test passed!
