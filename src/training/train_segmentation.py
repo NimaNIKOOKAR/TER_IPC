@@ -1,20 +1,22 @@
 # src/training/train_segmentation.py
 
-import os
+from datetime import datetime
+
 import torch
+from monai.data import Dataset, DataLoader, pad_list_data_collate
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
-from sklearn.model_selection import train_test_split
-from monai.data import Dataset, DataLoader, pad_list_data_collate
+from monai.networks.nets import UNet
 from monai.transforms import (
     LoadImaged, EnsureChannelFirstd, ScaleIntensityd, CropForegroundd,
     RandCropByPosNegLabeld, RandFlipd, ToTensord, EnsureTyped, Compose, Lambdad
 )
-from monai.networks.nets import UNet
-from src.utils.logger import setup_logging_training
-from src.utils.data_preparation import prepare_data
-from src.utils.transforms import combine_labels, RemoveKeysd
+from sklearn.model_selection import train_test_split
+
 from src.training.train_utils import train_epoch, validate_epoch
+from src.utils.data_preparation import prepare_data
+from src.utils.logger import setup_logging_training
+from src.utils.transforms import combine_labels, RemoveKeysd
 
 logger = setup_logging_training("logs/training_log.txt")
 
@@ -119,7 +121,7 @@ def training_main(num_epochs: int) -> None:
         if dice_score > best_metric:
             best_metric = dice_score
             best_metric_epoch = epoch + 1
-            torch.save(model.state_dict(), "models/best_metric_model.pth")
+            torch.save(model.state_dict(), f"models/best_metric_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pth")
             logger.info("Nouveau meilleur modèle sauvegardé!")
 
     logger.info(f"Meilleur score Dice: {best_metric:.4f} à l'epoch {best_metric_epoch}")

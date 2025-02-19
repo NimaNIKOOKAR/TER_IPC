@@ -1,9 +1,9 @@
-# src/run_detection.py
+# src/run_detection_wade.py
 
 import os
 import argparse
 import logging
-from src.training.train_detection import detect_diseased_ganglion
+from src.training.train_detection_wade import detect_diseased_ganglion
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
