@@ -1,1 +1,0 @@
-python src/run_detection.py --image_path data/cached_lynos/Benchmark/Pat01/pat01_data.nii.gz --model_path models/best_metric_model.pth --output_dir data/results/
