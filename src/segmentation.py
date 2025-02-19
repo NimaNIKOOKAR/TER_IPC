@@ -1,0 +1,773 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import glob
+import logging
+from time import time
+from zipfile import ZipFile
+from typing import Any, Dict, List, Tuple
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+
+# MONAI imports
+from monai.data import (
+    PersistentDataset,
+    Dataset,
+    DataLoader,
+    pad_list_data_collate
+)
+from monai.transforms import (
+    LoadImaged,
+    EnsureChannelFirstd,
+    ScaleIntensityd,
+    Spacingd,
+    CropForegroundd,
+    CopyItemsd,
+    Lambdad,
+    RandCropByPosNegLabeld,
+    RandFlipd,
+    RandRotate90d,
+    RandAffined,
+    RandScaleIntensityd,
+    ToTensord,
+    EnsureTyped,
+    Compose,
+    MapTransform,
+    Activations,
+    AsDiscrete
+)
+from monai.networks.nets import UNet
+from monai.losses import DiceLoss
+from monai.metrics import DiceMetric
+from monai.inferers import sliding_window_inference
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Disable torch._dynamo for reproducibility (optional)
+import torch._dynamo
+torch._dynamo.config.disable = True
+
+
+###############################################################################
+# Logging Setup
+###############################################################################
+def setup_logging(log_file: str = "training_log.txt") -> logging.Logger:
+    """
+    Sets up Python's logging with both console and file handlers.
+    """
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    # Remove any old handlers to avoid duplicates
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    # Console Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # File Handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+# Global logger instance
+logger = setup_logging()
+
+
+###############################################################################
+# Custom Transform: RemoveKeysd
+###############################################################################
+class RemoveKeysd(MapTransform):
+    """
+    Custom transform to remove specified keys from the data dictionary.
+    """
+    def __init__(self, keys: List[str]):
+        super().__init__(keys)
+        self.keys = keys
+
+    def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        d = dict(data)
+        for key in self.keys:
+            d.pop(key, None)
+        return d
+
+
+###############################################################################
+# combine_labels: Merge separate label masks into one multi-class label
+###############################################################################
+def combine_labels(data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    """
+    Combine multiple label arrays into a single multi-class label:
+      0: background
+      1: lymph
+      2: subcar
+      3: azygos
+      4: esophagus
+
+    (Adjust as needed if your dataset has different structures.)
+    """
+    lymph = data["label_lymph"]
+    subcar = data["label_subcar"]
+    azygos = data["label_azygos"]
+    esophagus = data["label_esophagus"]
+
+    label = np.zeros_like(lymph, dtype=np.uint8)
+    label[lymph > 0] = 1
+    label[subcar > 0] = 2
+    label[azygos > 0] = 3
+    label[esophagus > 0] = 4
+
+    unique, counts = np.unique(label, return_counts=True)
+    logger.debug(f"[DEBUG combine_labels] Unique label values: {dict(zip(unique, counts))}")
+    data["label"] = label
+    return data
+
+
+###############################################################################
+# prepare_data: Unzip (if needed) and locate image/label files
+###############################################################################
+def prepare_data(dataset_path: str) -> Tuple[List[str], List[str], List[str], List[str], List[str]]:
+    """
+    Looks for the 'Benchmark' folder in `dataset_path` (or unzips LyNoS.zip if present).
+    Returns sorted lists of image and label paths.
+
+    - image_paths
+    - lymph_label_paths
+    - subcar_label_paths
+    - azygos_label_paths
+    - esophagus_label_paths
+
+    Adjust logic if you don't need unzipping or have a different folder structure.
+    """
+    benchmark_path = os.path.join(dataset_path, "Benchmark")
+    zip_path = os.path.join(dataset_path, "LyNoS.zip")
+
+    # If 'Benchmark' isn't found, try unzipping
+    if not os.path.exists(benchmark_path) and os.path.isfile(zip_path):
+        logger.info("Extracting dataset...")
+        with ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(dataset_path)
+        logger.info("Dataset unzipped successfully!")
+
+    if not os.path.exists(benchmark_path):
+        raise FileNotFoundError(f"Benchmark folder not found at {benchmark_path}")
+
+    logger.info(f"Dataset found at: {benchmark_path}")
+
+    image_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_data.nii.gz")))
+    lymph_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_LymphNodes.nii.gz")))
+    subcar_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_SubCarArt.nii.gz")))
+    azygos_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_Azygos.nii.gz")))
+    esophagus_label_paths = sorted(glob.glob(os.path.join(benchmark_path, "Pat*", "pat*_labels_Esophagus.nii.gz")))
+
+    if not (image_paths and lymph_label_paths and subcar_label_paths and azygos_label_paths and esophagus_label_paths):
+        raise ValueError("One or more image/label files not found. Check dataset structure or naming conventions.")
+
+    logger.info(f"Found {len(image_paths)} CT images with associated labels.")
+    return image_paths, lymph_label_paths, subcar_label_paths, azygos_label_paths, esophagus_label_paths
+
+
+###############################################################################
+# create_transforms: Training/Validation transforms
+###############################################################################
+def create_transforms(train: bool = True) -> Compose:
+    """
+    Creates a Compose of MONAI transforms for training or validation.
+    """
+    patch_size = (96, 96, 96)  # Adjust as needed
+
+    # Base transforms (applied to both training & validation)
+    base_transforms = [
+        LoadImaged(
+            keys=["image", "label_lymph", "label_subcar", "label_azygos", "label_esophagus"],
+            dtype=np.float32
+        ),
+        EnsureChannelFirstd(
+            keys=["image", "label_lymph", "label_subcar", "label_azygos", "label_esophagus"]
+        ),
+        combine_labels,
+        Spacingd(
+            keys=["image", "label"],
+            pixdim=(2.0, 2.0, 2.0),
+            mode=("bilinear", "nearest")
+        ),
+        ScaleIntensityd(keys="image"),
+        CropForegroundd(keys=["image", "label"], source_key="image"),
+        CopyItemsd(keys=["label"], times=1, names=["label_binary"]),
+        Lambdad(
+            keys=["label_binary"],
+            func=lambda arr: (arr > 0).astype(arr.dtype)
+        )
+    ]
+
+    final_transforms = [
+        ToTensord(keys=["image", "label"]),
+        EnsureTyped(keys=["image"], dtype=torch.float32),
+        EnsureTyped(keys=["label"], dtype=torch.int64),
+        RemoveKeysd(keys=["label_lymph", "label_subcar", "label_azygos", "label_esophagus", "label_binary"])
+    ]
+
+    if train:
+        # Training-specific augmentations
+        train_transforms = base_transforms + [
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label_binary",
+                spatial_size=patch_size,
+                pos=4,
+                neg=1,
+                num_samples=4
+            ),
+            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
+            RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
+            RandAffined(
+                keys=["image", "label"],
+                prob=0.5,
+                rotate_range=(0.1, 0.1, 0.1),
+                translate_range=(10, 10, 10),
+                scale_range=(0.1, 0.1, 0.1),
+                mode=("bilinear", "nearest")
+            ),
+            RandScaleIntensityd(keys="image", factors=0.1, prob=0.5),
+        ] + final_transforms
+        return Compose(train_transforms)
+    else:
+        val_transforms = base_transforms + final_transforms
+
+        # Optional debug transform
+        def debug_label(data):
+            if "label" in data:
+                label = data["label"]
+                logger.debug(
+                    f"[DEBUG val_transform] label unique values: {np.unique(label)}, shape={label.shape}"
+                )
+            return data
+
+        val_transforms = val_transforms + [debug_label]
+        return Compose(val_transforms)
+
+
+###############################################################################
+# create_dataloaders: Build DataLoaders
+###############################################################################
+def create_dataloaders(
+    train_data,
+    val_data,
+    batch_size_train=1,
+    batch_size_val=1,
+    num_workers=0,
+    cache_dir="./persistent_cache"
+):
+    """
+    Creates MONAI DataLoaders (PersistentDataset for training, Dataset for validation).
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    train_transforms = create_transforms(train=True)
+    val_transforms = create_transforms(train=False)
+
+    train_ds = PersistentDataset(data=train_data, transform=train_transforms, cache_dir=cache_dir)
+    val_ds = Dataset(data=val_data, transform=val_transforms)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size_train,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=pad_list_data_collate
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size_val,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=pad_list_data_collate
+    )
+    return train_loader, val_loader
+
+
+###############################################################################
+# build_model: Construct the UNet
+###############################################################################
+def build_model(device: torch.device) -> torch.nn.Module:
+    """
+    Builds a 3D UNet model.
+    Adjust 'channels' and 'strides' as needed for your data size.
+    """
+    model = UNet(
+        spatial_dims=3,
+        in_channels=1,
+        out_channels=5,  # 0=bg + 4 structures
+        channels=(16, 32, 64),
+        strides=(2, 2),
+        num_res_units=1,
+    ).to(device)
+    logger.info("Model moved to device successfully!")
+    return model
+
+
+###############################################################################
+# FocalLoss for Multi-class
+###############################################################################
+class FocalLoss(torch.nn.Module):
+    """
+    Multi-class focal loss using cross-entropy under the hood.
+    """
+    def __init__(self, gamma=2, weight=None, reduction="mean"):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        logpt = -F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        pt = torch.exp(logpt)
+        loss = -((1 - pt) ** self.gamma) * logpt
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
+###############################################################################
+# overfit_single_case for debugging
+###############################################################################
+def overfit_single_case(sample_dict, model, optimizer, loss_function, device, num_epochs=20):
+    """
+    Attempt to overfit the model on a single sample to debug the pipeline.
+    """
+    from torch.utils.data import DataLoader
+    from monai.data import Dataset
+
+    logger.info("Starting overfit test on a single case...")
+    transform = create_transforms(train=True)
+    ds = Dataset(data=[sample_dict], transform=transform)
+    loader = DataLoader(ds, batch_size=1, shuffle=True)
+
+    model.train()
+    for epoch in range(num_epochs):
+        for batch in loader:
+            inputs = batch["image"].to(device)
+            labels = batch["label"].to(device)
+            outputs = model(inputs)
+            loss = loss_function(outputs, labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        logger.info(f"Overfit epoch {epoch+1}, loss: {loss.item():.4f}")
+
+    logger.info("Overfit test completed.")
+
+
+###############################################################################
+# train_epoch
+###############################################################################
+def train_epoch(
+    model: torch.nn.Module,
+    loader,
+    loss_function,
+    optimizer,
+    device: torch.device,
+    use_amp: bool = False
+) -> float:
+    """
+    One epoch of training: forward + backward.
+    Returns the average loss.
+    """
+    model.train()
+    epoch_loss = 0.0
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    for batch_idx, batch in enumerate(loader, start=1):
+        inputs = batch["image"].to(device)
+        labels = batch["label"].to(device)
+
+        optimizer.zero_grad()
+
+        with torch.autocast(device_type="cuda", enabled=use_amp):
+            outputs = model(inputs)
+            loss = loss_function(outputs, labels)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        torch.cuda.synchronize()
+
+        epoch_loss += loss.item()
+        logger.debug(f"[Train] Batch {batch_idx} => loss: {loss.item():.4f}")
+
+    avg_loss = epoch_loss / len(loader) if len(loader) > 0 else 0.0
+    logger.info(f"[Train] Epoch average loss: {avg_loss:.4f}")
+    return avg_loss
+
+
+###############################################################################
+# validate_epoch
+###############################################################################
+def validate_epoch(
+    model: torch.nn.Module,
+    loader,
+    dice_metric: DiceMetric,
+    post_pred,
+    device: torch.device,
+    roi_size=(96,96,96)
+):
+    """
+    Validation using sliding-window inference over the full volume.
+    Returns overall dice and per-class dice.
+    """
+    model.eval()
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader, start=1):
+            val_inputs = batch["image"].to(device)
+            val_labels = batch["label"].to(device)
+
+            # Sliding-window inference
+            outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size=1, predictor=model)
+            outputs_post = post_pred(outputs)
+
+            # Convert ground truth to one-hot for Dice metric
+            val_labels_squeezed = torch.squeeze(val_labels, 1)
+            val_labels_onehot = F.one_hot(val_labels_squeezed.long(), num_classes=5)
+            val_labels_onehot = val_labels_onehot.permute(0, 4, 1, 2, 3).float()
+
+            dice_metric(y_pred=outputs_post, y=val_labels_onehot)
+
+        aggregated = dice_metric.aggregate()
+        dice_metric.reset()
+
+        if aggregated is None:
+            overall_dice = 0.0
+            per_class_dice = torch.zeros(5)
+        else:
+            overall_dice = torch.nanmean(aggregated).item() if aggregated.ndim > 0 else aggregated.item()
+            per_class_dice = aggregated
+
+    logger.info(f"[Val] Dice per class: {per_class_dice.cpu().numpy()}")
+    logger.info(f"[Val] Overall Dice Score: {overall_dice:.4f}")
+    return overall_dice, per_class_dice
+
+
+###############################################################################
+# train_segmentation (Main training entry)
+###############################################################################
+def train_segmentation(
+    dataset_path: str,
+    num_epochs: int = 80,
+    batch_size: int = 1,
+    lr: float = 1e-4,
+    cache_dir: str = "./persistent_cache",
+    checkpoint_path: str = "best_metric_model.pth",
+    run_overfit: bool = False
+):
+    """
+    Main entry for training the segmentation model. Saves best model checkpoint.
+    """
+    logger.info(f"[INFO] Using dataset_path: {dataset_path}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"[INFO] Using device: {device}")
+
+    if device.type == "cuda":
+        try:
+            torch.cuda.empty_cache()
+            # quick GPU test
+            test_tensor = torch.randn(1, 1, 10, 10, 10, device=device)
+            conv_test = torch.nn.Conv3d(1, 2, kernel_size=3, padding=1).to(device)
+            _ = conv_test(test_tensor)
+            logger.info("[INFO] GPU test passed!")
+        except Exception as e:
+            logger.error(f"[ERROR] GPU test failed: {e}")
+            device = torch.device("cpu")
+            logger.info("[INFO] Falling back to CPU.")
+
+    # 1) Prepare data
+    (image_paths, lymph_paths, subcar_paths,
+     azygos_paths, esophagus_paths) = prepare_data(dataset_path)
+
+    # 2) Train/Validation split
+    (train_imgs, val_imgs,
+     train_lymph, val_lymph,
+     train_subcar, val_subcar,
+     train_azygos, val_azygos,
+     train_esophagus, val_esophagus) = train_test_split(
+         image_paths, lymph_paths, subcar_paths,
+         azygos_paths, esophagus_paths,
+         test_size=0.2, random_state=42
+     )
+
+    train_data = [
+        {
+            "image": img,
+            "label_lymph": l_lymph,
+            "label_subcar": l_subcar,
+            "label_azygos": l_azyg,
+            "label_esophagus": l_esoph
+        }
+        for img, l_lymph, l_subcar, l_azyg, l_esoph in zip(
+            train_imgs, train_lymph, train_subcar, train_azygos, train_esophagus
+        )
+    ]
+    val_data = [
+        {
+            "image": img,
+            "label_lymph": l_lymph,
+            "label_subcar": l_subcar,
+            "label_azygos": l_azyg,
+            "label_esophagus": l_esoph
+        }
+        for img, l_lymph, l_subcar, l_azyg, l_esoph in zip(
+            val_imgs, val_lymph, val_subcar, val_azygos, val_esophagus
+        )
+    ]
+
+    # 3) Create DataLoaders
+    train_loader, val_loader = create_dataloaders(
+        train_data, val_data,
+        batch_size_train=batch_size,
+        batch_size_val=batch_size,
+        num_workers=0,
+        cache_dir=cache_dir
+    )
+
+    # 4) Build model
+    model = build_model(device)
+
+    # 5) Define combined focal + dice loss
+    # Lower weight for background => e.g. 0.001 vs. 1.0 for foreground
+    ce_weight = torch.tensor([0.001, 1.0, 1.0, 1.0, 1.0], device=device, dtype=torch.float32)
+    focal_loss = FocalLoss(gamma=2, weight=ce_weight, reduction="mean")
+    dice_loss = DiceLoss(to_onehot_y=True, softmax=True)
+
+    def combined_loss(outputs, labels):
+        return dice_loss(outputs, labels) + focal_loss(outputs, torch.squeeze(labels, 1))
+
+    loss_function = combined_loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
+
+    # For PyTorch 2.0+ we might need capturable if we use CUDA Graphs or AMP
+    if device.type == "cuda":
+        for group in optimizer.param_groups:
+            group["capturable"] = True
+
+    # 6) Dice metric & post-processing for validation
+    dice_metric = DiceMetric(
+        include_background=False,
+        reduction="mean",
+        get_not_nans=False
+    )
+    post_pred = Compose([
+        Activations(softmax=True),
+        AsDiscrete(argmax=True, to_onehot=5, dim=1)
+    ])
+
+    # 7) Optional: Overfit single sample
+    if run_overfit and len(train_data) > 0:
+        overfit_single_case(train_data[0], model, optimizer, loss_function, device, num_epochs=20)
+        # Return here if only testing overfit
+        # return
+
+    # 8) Quick forward-backward test
+    try:
+        model.train()
+        batch_data = next(iter(train_loader))
+        inputs = batch_data["image"].to(device)
+        labels = batch_data["label"].to(device)
+        outputs = model(inputs)
+        loss_test = loss_function(outputs, labels)
+        logger.info(f"[DEBUG] Initial loss: {loss_test.item():.4f}")
+        loss_test.backward()
+        optimizer.step()
+        torch.cuda.synchronize()
+        logger.info("[DEBUG] Initial forward-backward pass successful.")
+    except Exception as e:
+        logger.error(f"Initial forward-backward pass failed: {e}")
+        return
+
+    best_metric = -1.0
+    best_metric_epoch = -1
+    use_amp = (device.type == "cuda")
+
+    # 9) Main training loop
+    try:
+        for epoch in range(num_epochs):
+            start_time = time()
+            logger.info(f"=== Epoch {epoch+1}/{num_epochs} ===")
+
+            avg_loss = train_epoch(model, train_loader, loss_function, optimizer, device, use_amp)
+            overall_dice, per_class_dice = validate_epoch(model, val_loader, dice_metric, post_pred, device, roi_size=(96,96,96))
+
+            logger.info(f"[Epoch {epoch+1}] Loss: {avg_loss:.4f}, Val Dice: {overall_dice:.4f}")
+
+            # Checkpoint if improved
+            if overall_dice > best_metric:
+                best_metric = overall_dice
+                best_metric_epoch = epoch + 1
+                torch.save(model.state_dict(), checkpoint_path)
+                logger.info("[INFO] Saved new best model checkpoint.")
+
+            scheduler.step(overall_dice)
+            logger.info(f"Epoch {epoch+1} completed in {time() - start_time:.2f}s.\n")
+
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt detected. Stopping training gracefully.")
+    except Exception as e:
+        logger.error(f"Exception during training loop: {e}")
+
+    logger.info(f"[INFO] Best Val Dice: {best_metric:.4f} at epoch {best_metric_epoch}")
+
+    # 10) Final evaluation: load best model, visualize one sample
+    try:
+        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    except Exception as e:
+        logger.error(f"Error loading best model checkpoint: {e}")
+
+    model.eval()
+    if len(val_loader) > 0:
+        with torch.no_grad():
+            for val_batch in val_loader:
+                val_inputs = val_batch["image"].to(device)
+                val_labels = val_batch["label"].to(device)
+                outputs = sliding_window_inference(val_inputs, (96,96,96), sw_batch_size=1, predictor=model)
+                outputs_post = post_pred(outputs)
+
+                val_labels_squeezed = torch.squeeze(val_labels, 1)
+                val_labels_onehot = F.one_hot(val_labels_squeezed.long(), num_classes=5)
+                val_labels_onehot = val_labels_onehot.permute(0, 4, 1, 2, 3).float()
+
+                # Plot mid-slice
+                plt.figure("Segmentation Results", (12, 6))
+                slice_idx = val_inputs.shape[-1] // 2
+
+                # Input
+                plt.subplot(1, 3, 1)
+                plt.title("CT Volume")
+                plt.imshow(val_inputs.cpu().numpy()[0, 0, :, :, slice_idx], cmap="gray")
+                plt.axis("off")
+
+                # Ground Truth
+                plt.subplot(1, 3, 2)
+                plt.title("Ground Truth")
+                gt = torch.argmax(val_labels_onehot, dim=1).cpu().numpy()[0]
+                plt.imshow(gt[:, slice_idx], cmap="viridis")
+                plt.axis("off")
+
+                # Prediction
+                plt.subplot(1, 3, 3)
+                plt.title("Prediction")
+                pred = torch.argmax(outputs_post, dim=1).cpu().numpy()[0]
+                plt.imshow(pred[:, slice_idx], cmap="viridis")
+                plt.axis("off")
+
+                plt.tight_layout()
+                plt.show()
+                break
+
+    logger.info("[INFO] Training completed.")
+
+
+###############################################################################
+# run_segmentation_inference
+###############################################################################
+def build_inference_transforms():
+    """
+    Return minimal set of transforms suitable for inference on full volumes.
+    """
+    return Compose([
+        LoadImaged(keys=["image"], dtype=np.float32),
+        EnsureChannelFirstd(keys=["image"]),
+        Spacingd(keys=["image"], pixdim=(2.0,2.0,2.0), mode=("bilinear",)),
+        ScaleIntensityd(keys=["image"]),
+        CropForegroundd(keys=["image"], source_key="image"),
+        EnsureTyped(keys=["image"], dtype=torch.float32)
+    ])
+
+
+def run_segmentation_inference(
+    dataset_path: str,
+    checkpoint_path: str = "best_metric_model.pth",
+    roi_size=(96,96,96),
+    output_classes=5
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """
+    Loads the best checkpoint from `checkpoint_path`.
+    Finds all "PatXXX" subfolders in `dataset_path`.
+    For each patient, runs sliding-window inference on patxxx_data.nii.gz.
+
+    Returns:
+      predictions: dict of { "Pat001": (ct_array, pred_label), ... }
+         where:
+           ct_array has shape (D,H,W),
+           pred_label has shape (D,H,W) with values in [0..output_classes-1].
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Rebuild UNet architecture
+    model = UNet(
+        spatial_dims=3,
+        in_channels=1,
+        out_channels=output_classes,
+        channels=(16,32,64),
+        strides=(2,2),
+        num_res_units=1
+    ).to(device)
+
+    logger.info(f"[Inference] Loading model from {checkpoint_path}")
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model.eval()
+
+    post_pred = Compose([
+        Activations(softmax=True),
+        AsDiscrete(argmax=True, to_onehot=output_classes, dim=1)
+    ])
+
+    # Collect patient folders
+    patient_folders = sorted([
+        os.path.join(dataset_path, f)
+        for f in os.listdir(dataset_path)
+        if f.startswith("Pat")
+    ])
+    logger.info(f"[Inference] Found {len(patient_folders)} patient folders in {dataset_path}")
+
+    inf_transforms = build_inference_transforms()
+    predictions = {}
+
+    with torch.no_grad():
+        for folder in patient_folders:
+            patient_id = os.path.basename(folder).lower()
+            # e.g., pat001_data.nii.gz
+            ct_file = os.path.join(folder, f"{patient_id}_data.nii.gz")
+            if not os.path.isfile(ct_file):
+                logger.warning(f"[Inference] Missing CT file for {patient_id}: {ct_file}")
+                continue
+
+            data_dict = {"image": ct_file}
+            data_dict = inf_transforms(data_dict)
+            ct_tensor = data_dict["image"][None].to(device)  # shape: (1,1,D,H,W)
+
+            seg_logits = sliding_window_inference(ct_tensor, roi_size, sw_batch_size=1, predictor=model)
+            seg_softmax = post_pred(seg_logits)  # shape: (1, classes, D,H,W)
+            seg_label = torch.argmax(seg_softmax, dim=1)  # shape: (1,D,H,W)
+            pred_label = seg_label.squeeze(0).cpu().numpy().astype(np.uint8)
+
+            ct_data = ct_tensor.squeeze(0).squeeze(0).cpu().numpy()  # (D,H,W) float32
+            predictions[patient_id] = (ct_data, pred_label)
+
+            logger.info(f"[Inference] {patient_id}: done, shape={pred_label.shape}")
+
+    return predictions
