@@ -3,7 +3,6 @@
 import logging
 import os
 
-
 def setup_logging_training(log_file: str = "training_log.txt") -> logging.Logger:
     """
     Configure le logger pour écrire à la fois dans la console et dans un fichier.

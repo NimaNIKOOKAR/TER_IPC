@@ -1,0 +1,4 @@
+2025-02-19 13:35:27,921 [INFO] Démarrage de la détection des ganglions malades...
+2025-02-19 13:35:27,921 [INFO] Using device: cpu
+2025-02-19 13:36:22,686 [INFO] Saved diseased ganglia detection results to: data/results\diseased_ganglia.nii.gz
+2025-02-19 13:36:23,055 [INFO] Détection des ganglions malades terminée.

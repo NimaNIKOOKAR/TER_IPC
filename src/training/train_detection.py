@@ -1,5 +1,7 @@
 import os
 import logging
+import sys
+from datetime import datetime
 import torch
 import numpy as np
 import nibabel as nib
@@ -20,7 +22,7 @@ from monai.networks.nets import UNet
 from monai.inferers import sliding_window_inference
 
 from src.utils.logger import setup_logging_detection
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 logger = setup_logging_detection()
 
 
@@ -78,21 +80,11 @@ def detect_diseased_ganglion(image_path: str, model_path: str, output_dir: str):
 
     # Sauvegarder les résultats
     output_image = nib.Nifti1Image(diseased_ganglia, np.eye(4))
-    output_path = os.path.join(output_dir, "diseased_ganglia.nii.gz")
+    output_path = os.path.join(output_dir, f"diseased_ganglia_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nii.gz")
     nib.save(output_image, output_path)
     logger.info(f"Saved diseased ganglia detection results to: {output_path}")
 
     # Afficher les résultats
-    plt.figure("Diseased Ganglia Detection", (12, 6))
-    plt.subplot(1, 2, 1)
-    plt.title("Input Image")
-    plt.imshow(input_tensor.cpu().numpy()[0, 0, :, :, 50], cmap="gray")
-    plt.axis("off")
-
-    plt.subplot(1, 2, 2)
-    plt.title("Diseased Ganglia")
-    plt.imshow(diseased_ganglia[:, :, 50], cmap="jet")
-    plt.axis("off")
-    plt.show()
+    return output_path
 
 

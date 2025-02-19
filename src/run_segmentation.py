@@ -3,6 +3,7 @@
 import logging
 from src.training.train_segmentation import training_main
 
+
 NUM_EPOCHS = 10
 
 if __name__ == "__main__":
