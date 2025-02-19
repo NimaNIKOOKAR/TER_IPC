@@ -12,3 +12,15 @@
 2025-02-19 17:24:56,301 [INFO] Using device: cpu
 2025-02-19 17:25:39,162 [INFO] Saved diseased ganglia detection results to: src/data/results\diseased_ganglia_20250219_172536.nii.gz
 2025-02-19 17:25:39,255 [INFO] Détection terminée.
+2025-02-19 17:44:59,134 [INFO] Démarrage de la détection des ganglions malades...
+2025-02-19 17:44:59,134 [INFO] Using device: cpu
+2025-02-19 17:46:06,274 [INFO] Saved diseased ganglia detection results to: src/data/results\diseased_ganglia_20250219_174603.nii.gz
+2025-02-19 17:46:06,476 [INFO] Détection terminée.
+2025-02-19 17:47:29,462 [INFO] Démarrage de la détection des ganglions malades...
+2025-02-19 17:47:29,462 [INFO] Using device: cpu
+2025-02-19 17:48:21,076 [INFO] Saved diseased ganglia detection results to: src/data/results\diseased_ganglia_20250219_174818.nii.gz
+2025-02-19 17:48:21,183 [INFO] Détection terminée.
+2025-02-19 18:03:45,582 [INFO] Démarrage de la détection des ganglions malades...
+2025-02-19 18:03:45,582 [INFO] Using device: cpu
+2025-02-19 18:04:40,886 [INFO] Saved diseased ganglia detection results to: src/data/results\diseased_ganglia_20250219_180438.nii.gz
+2025-02-19 18:04:40,960 [INFO] Détection terminée.
