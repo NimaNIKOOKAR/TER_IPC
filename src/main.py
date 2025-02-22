@@ -5,7 +5,7 @@ import argparse
 import os
 
 # Import your refactored code from segmentation.py and detection.py
-from segmentation import train_segmentation, run_segmentation_inference
+from segmentation import train_segmentation
 from detection import run_detection_viewer
 
 def main():
