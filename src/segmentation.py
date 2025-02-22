@@ -34,6 +34,9 @@ from monai.transforms import (
     RandRotate90d,
     RandAffined,
     RandScaleIntensityd,
+    RandGaussianNoised,
+    RandAdjustContrastd,
+    ResizeWithPadOrCropd,  # NEW: force fixed spatial size
     ToTensord,
     EnsureTyped,
     Compose,
@@ -45,7 +48,7 @@ from monai.networks.nets import UNet
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # Disable torch._dynamo for reproducibility
 import torch._dynamo
@@ -132,7 +135,8 @@ def prepare_data(dataset_path: str) -> Tuple[List[str], List[str], List[str], Li
 # create_transforms: Training/Validation transforms
 ###############################################################################
 def create_transforms(train: bool = True) -> Compose:
-    patch_size = (128, 128, 128)
+    # Use a larger patch size for fixed-size outputs.
+    patch_size = (160, 160, 160)
     base_transforms = [
         LoadImaged(
             keys=["image", "label_lymph", "label_subcar", "label_azygos", "label_esophagus"],
@@ -155,11 +159,18 @@ def create_transforms(train: bool = True) -> Compose:
             func=lambda arr: (arr > 0).astype(arr.dtype)
         )
     ]
+    # Here we enforce a fixed spatial size (using ResizeWithPadOrCropd) before final conversion.
+    resize_transform = ResizeWithPadOrCropd(keys=["image", "label"], spatial_size=patch_size)
     final_transforms = [
+        resize_transform,
         ToTensord(keys=["image", "label"]),
         EnsureTyped(keys=["image"], dtype=torch.float32),
         EnsureTyped(keys=["label"], dtype=torch.int64),
-        RemoveKeysd(keys=["label_lymph", "label_subcar", "label_azygos", "label_esophagus", "label_binary"])
+        # Remove extra keys that might vary across samples.
+        RemoveKeysd(keys=[
+            "label_lymph", "label_subcar", "label_azygos", "label_esophagus",
+            "label_binary", "foreground_start_coord", "foreground_end_coord"
+        ])
     ]
     if train:
         train_transforms = base_transforms + [
@@ -169,7 +180,8 @@ def create_transforms(train: bool = True) -> Compose:
                 spatial_size=patch_size,
                 pos=1,
                 neg=1,
-                num_samples=4
+                num_samples=4,
+                allow_smaller=True
             ),
             RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
             RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
@@ -182,6 +194,8 @@ def create_transforms(train: bool = True) -> Compose:
                 mode=("bilinear", "nearest")
             ),
             RandScaleIntensityd(keys="image", factors=0.1, prob=0.5),
+            RandGaussianNoised(keys="image", prob=0.1, mean=0.0, std=0.1),
+            RandAdjustContrastd(keys="image", prob=0.1, gamma=(0.7, 1.5)),
         ] + final_transforms
         return Compose(train_transforms)
     else:
@@ -200,7 +214,7 @@ def create_transforms(train: bool = True) -> Compose:
 def create_dataloaders(
     train_data,
     val_data,
-    batch_size_train=1,
+    batch_size_train=2,
     batch_size_val=1,
     num_workers=0,
     cache_dir="./persistent_cache"
@@ -227,15 +241,16 @@ def create_dataloaders(
     return train_loader, val_loader
 
 ###############################################################################
-# build_model: Construct the 3D UNet
+# build_model: Construct a deeper 3D UNet
 ###############################################################################
 def build_model(device: torch.device) -> torch.nn.Module:
+    # 5-level UNet for increased capacity.
     model = UNet(
         spatial_dims=3,
         in_channels=1,
         out_channels=5,
-        channels=(16, 32, 64, 128),
-        strides=(2, 2, 2),
+        channels=(16, 32, 64, 128, 256),
+        strides=(2, 2, 2, 2),
         num_res_units=2
     ).to(device)
     logger.info("Model moved to device successfully!")
@@ -354,8 +369,8 @@ def validate_epoch(
 ###############################################################################
 def train_segmentation(
     dataset_path: str,
-    num_epochs: int = 80,
-    batch_size: int = 1,
+    num_epochs: int = 100,
+    batch_size: int = 2,
     lr: float = 1e-4,
     cache_dir: str = "./persistent_cache",
     checkpoint_path: str = "best_metric_model.pth",
@@ -424,19 +439,8 @@ def train_segmentation(
         return dice_loss(outputs, labels) + focal_loss(outputs, torch.squeeze(labels, 1))
     loss_function = combined_loss
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
-    if device.type == "cuda":
-        for group in optimizer.param_groups:
-            group["capturable"] = True
-    dice_metric = DiceMetric(
-        include_background=True,
-        reduction="mean",
-        get_not_nans=False
-    )
-    post_pred = Compose([
-        Activations(softmax=True),
-        AsDiscrete(argmax=True, to_onehot=5, dim=1)
-    ])
+    # Use CosineAnnealingLR for smoother decay.
+    scheduler = CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-6)
     if run_overfit and len(train_data) > 0:
         overfit_single_case(train_data[0], model, optimizer, loss_function, device, num_epochs=20)
     try:
@@ -462,14 +466,19 @@ def train_segmentation(
             start_time = time()
             logger.info(f"=== Epoch {epoch+1}/{num_epochs} ===")
             avg_loss = train_epoch(model, train_loader, loss_function, optimizer, device, use_amp)
-            overall_dice, per_class_dice = validate_epoch(model, val_loader, dice_metric, post_pred, device, roi_size=(128,128,128))
+            dice_metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False)
+            post_pred = Compose([
+                Activations(softmax=True),
+                AsDiscrete(argmax=True, to_onehot=5, dim=1)
+            ])
+            overall_dice, per_class_dice = validate_epoch(model, val_loader, dice_metric, post_pred, device, roi_size=(160,160,160))
             logger.info(f"[Epoch {epoch+1}] Loss: {avg_loss:.4f}, Val Dice: {overall_dice:.4f}")
             if overall_dice > best_metric:
                 best_metric = overall_dice
                 best_metric_epoch = epoch + 1
                 torch.save(model.state_dict(), checkpoint_path)
                 logger.info("[INFO] Saved new best model checkpoint.")
-            scheduler.step(overall_dice)
+            scheduler.step()
             logger.info(f"Epoch {epoch+1} completed in {time() - start_time:.2f}s.\n")
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt detected. Stopping training gracefully.")
@@ -486,7 +495,7 @@ def train_segmentation(
             for val_batch in val_loader:
                 val_inputs = val_batch["image"].to(device)
                 val_labels = val_batch["label"].to(device)
-                outputs = sliding_window_inference(val_inputs, (128,128,128), sw_batch_size=1, predictor=model)
+                outputs = sliding_window_inference(val_inputs, (160,160,160), sw_batch_size=1, predictor=model)
                 outputs_post = post_pred(outputs)
                 val_labels_squeezed = torch.squeeze(val_labels, 1)
                 val_labels_onehot = F.one_hot(val_labels_squeezed.long(), num_classes=5)
@@ -569,3 +578,17 @@ def run_segmentation_inference(
             predictions[patient_id] = (ct_data, pred_label)
             logger.info(f"[Inference] {patient_id}: done, shape={pred_label.shape}")
     return predictions
+
+###############################################################################
+# Main entry point
+###############################################################################
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="3D Segmentation Training Script")
+    parser.add_argument("--dataset-path", type=str, required=True, help="Path to the dataset directory")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=2, help="Batch size for training")
+    parser.add_argument("--mode", type=str, default="segmentation", help="Mode of operation (e.g., segmentation)")
+    args = parser.parse_args()
+    if args.mode == "segmentation":
+        train_segmentation(dataset_path=args.dataset_path, num_epochs=args.epochs, batch_size=args.batch_size)
