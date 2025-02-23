@@ -36,7 +36,7 @@ from monai.transforms import (
     RandScaleIntensityd,
     RandGaussianNoised,
     RandAdjustContrastd,
-    ResizeWithPadOrCropd,  # NEW: force fixed spatial size
+    ResizeWithPadOrCropd, 
     ToTensord,
     EnsureTyped,
     Compose,
