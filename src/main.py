@@ -4,14 +4,14 @@
 import argparse
 import os
 
-# Import your refactored code from segmentation.py and detection.py
+
 from segmentation import train_segmentation
 from detection import run_detection_viewer
 
 def main():
     parser = argparse.ArgumentParser(description="Main script for 3D segmentation & detection with Napari.")
     
-    # Required argument: dataset path
+    
     parser.add_argument(
         "--dataset-path",
         type=str,

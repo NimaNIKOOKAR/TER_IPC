@@ -25,14 +25,14 @@ def measure_short_axis(coords: np.ndarray, affine: np.ndarray) -> (float, np.nda
         center_world = nib.affines.apply_affine(affine, mean_vox_reordered)[0]
         return 0.0, center_world
 
-    # Reorder coords to (x,y,z)
+    
     coords_reordered = coords[:, [2,1,0]]
     world_coords = nib.affines.apply_affine(affine, coords_reordered)
 
     mean_pt = np.mean(world_coords, axis=0)
     centered = world_coords - mean_pt
     cov = np.cov(centered, rowvar=False)
-    # smallest eigenvalue => minor axis
+    
     eigenvalues, _ = eigh(cov)
     eigenvalues = np.maximum(eigenvalues, 1e-6)
     short_axis = 2.0 * np.sqrt(np.min(eigenvalues))
@@ -162,7 +162,7 @@ def run_detection_viewer(
 
     The short-axis threshold is `cancer_thresh`.
     """
-    # 1) Gather patient folders
+    
     patient_folders = sorted([
         os.path.join(dataset_path, f)
         for f in os.listdir(dataset_path)
@@ -258,7 +258,7 @@ def run_detection_viewer(
         ct_min, ct_max = float(np.min(ct_data)), float(np.max(ct_data))
         ct_layer.contrast_limits = (ct_min, ct_max)
 
-        # Reset the viewer camera
+        
         viewer.reset_view()
 
         # Print summary of LN short-axis classification
@@ -269,9 +269,9 @@ def run_detection_viewer(
                 f"=> {comp['classification']}, center={comp['center_world']}"
             )
 
-    # 5) Create widget & dock it
+    
     selector = PatientSelectorWidget(patient_folders, load_patient)
     viewer.window.add_dock_widget(selector, area='right')
 
-    # 6) Start Napari
+    
     napari.run()
