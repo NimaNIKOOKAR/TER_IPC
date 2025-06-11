@@ -1,5 +1,3 @@
-﻿﻿# IPC_TER
-
 # Automatic Detection, 3D Segmentation, and AI-Assisted Characterization of Pathological Lymph Node Formations in Thoraco-Abdomino-Pelvic CT Scans for Onco-Hematology Patients
 
 ## Project Description
