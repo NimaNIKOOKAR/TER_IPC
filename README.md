@@ -1,6 +1,8 @@
 # Automatic Detection, 3D Segmentation, and AI-Assisted Characterization of Pathological Lymph Node Formations in Thoraco-Abdomino-Pelvic CT Scans for Onco-Hematology Patients
 
+
 ## Project Description
+
 ### Context and Problem Statement
 Artificial intelligence (AI) has demonstrated significant potential in the automatic detection of tumor lesions in CT scans. Several commercial AI-driven solutions for detecting and segmenting pulmonary and hepatic lesions are already used in clinical practice.
 
