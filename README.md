@@ -66,15 +66,9 @@ The project will involve:
    cd <repository_folder>
    ```
 
-2. **Prepare Data:**
-   - Ensure **DICOM/TIFF images** are placed in the correct dataset folder.
-   - Run the preprocessing script:
-     ```bash
-     python preprocess.py
-     ```
 3. **Train the Model:**
    ```bash
-   python train.py
+   python main.py
    ```
 
 
