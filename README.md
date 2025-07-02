@@ -65,24 +65,18 @@ The project will involve:
    git clone <repository_url>
    cd <repository_folder>
    ```
-2. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **Prepare Data:**
+
+2. **Prepare Data:**
    - Ensure **DICOM/TIFF images** are placed in the correct dataset folder.
    - Run the preprocessing script:
      ```bash
      python preprocess.py
      ```
-4. **Train the Model:**
+3. **Train the Model:**
    ```bash
    python train.py
    ```
-5. **Evaluate on External Datasets:**
-   ```bash
-   python evaluate.py
-   ```
+
 
 ## Contact
 For further inquiries, please reach out to the project team.
